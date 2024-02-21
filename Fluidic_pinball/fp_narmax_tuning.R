@@ -1,0 +1,154 @@
+############################
+### Tuning of parameters ###
+############################
+gs <- list(ny = c(3, 4),
+           nu = c(3, 4),
+           ne = c(3, 4),
+           nl = c(3, 4),
+           rho_p1 = c(0.000001, 0.00001, 0.0001, 0.001),
+           rho_p2 = c(0.0000000001, 0.000000001, 0.00000001, 0.0000001),
+           rho_e1 = c(0.0000000001, 0.000000001, 0.00000001, 0.0000001),
+           rho_e2 = c(0.0000000001, 0.000000001, 0.00000001, 0.0000001))  %>% 
+  cross_df() # Convert to data frame grid
+
+# Fit model with different parameters
+MSEs = rep(0, nrow(gs))
+
+# Calculate MAE between prediction and real value for different combinations
+for (i in 1:nrow(gs)) {
+  
+  MSEs_aux = rep(0, 5)
+  k = 0
+  
+  # Iterate through the five different segments for crossvalidation
+  for (l in 1:5) {
+    
+    # Create training and test sets
+    train_set = as.matrix(xyzu_train[1:(9200+k), ])
+    val_set = as.matrix(xyzu_train[(9200+k+1):(9200+k+100), ])
+    
+    model_narmax = narmax(ny = gs[i, 1]$ny, nu = gs[i, 2]$nu, ne = gs[i, 3]$ne, nl = gs[i, 4]$nl)
+    
+    tryCatch({
+      model_narmax = estimate.narmax(model_narmax, train_set[, 1:2], as.matrix(train_set[, 3]), 
+                                     c(gs[i, 5]$rho_p1, gs[i, 6]$rho_p2), c(gs[i, 7]$rho_e1, gs[i, 8]$rho_e2))
+      
+      # Create predictions
+      pred_narmax = predict(model_narmax, val_set[, 1:2], as.matrix(val_set[, 3]), K=0)
+      MSE_sum = 0
+      
+      # Calculate MSE for each prediction and add results for all components
+      for(j in 1:nb_series) {
+        MSE = sqrt(mean((val_set[, j] - pred_narmax[[j]]$yh)^2))/sd(val_set[, j])
+        print(MSE)
+        MSEs_aux[l, j] = MSE
+        MSE_sum = MSE_sum + MSE
+      }
+      
+      # Save to matrix
+      MSEs_aux[l, 3] = MSE_sum/nb_series
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+    
+    # Take next step in crossvalidation
+    k = k + 100
+  }
+  MSEs[i] = mean(MSEs_aux)
+  print(MSEs[i])
+}  
+
+
+######################################
+### Tuning of smoothing parameters ###
+######################################
+# Get optimal parameters
+opt_n = data.frame(ny=4, nu=4, ne=3, nl=4, rho_p1=1e-05, rho_p2=1e-09, rho_e1=1e-09, rho_e2=1e-09)
+
+# Tuning smoothing parameters using PLR
+MSEs_aux_n005 = rep(0, nb_series)
+MSEs_aux_n01 = rep(0, nb_series)
+MSEs_aux_n02 = rep(0, nb_series)
+
+# Create training and test sets
+train_set = as.matrix(xyzu_train[1:13594, ])
+val_set = as.matrix(xyzu_train[13595:nrow(xyzu_train), ])
+
+# Train model
+narmax_model = narmax(opt_n$ny, opt_n$nu, opt_n$ne, opt_n$nl)
+narmax_model = estimate.narmax(narmax_model, train_set[, 1:2], as.matrix(train_set[, 3]), 1e-12, 1e-12)
+
+##################
+### 0.5% noise ###
+##################
+# Add 0.5% of noise to initial condition
+val_set_n005 = val_set
+
+for(j in 1:nb_series) {
+  for(f in 1:opt_n$ny) {
+    val_set_n005[f, j] = val_set_n005[f, j] + 0.005*rnorm(1, 0, 1)
+  }
+}
+
+# Create predictions
+pred_n005_aux = predict.narmax(narmax_model, val_set_n005[, 1:nb_series], as.matrix(val_set_n005[, (nb_series+1)]), K=0)
+
+for(j in 1:nb_series) {
+  
+  pred = data.frame(pred = pred_n005_aux[[j]]$yh, time = seq(0.01, 3.03, 0.01))
+  
+  aux = np.cv(data = as.matrix(pred), h.seq = NULL, num.h = 1000, w = NULL, num.ln = 1,
+              ln.0 = 0, step.ln = 2, estimator = "LLP", kernel = "triweight")
+  
+  MSEs_aux_n005[j] = aux$h.opt[2, ]
+}
+
+
+################
+### 1% noise ###
+################
+# Add 1% of noise to initial condition
+val_set_n01 = val_set
+
+for(j in 1:nb_series) {
+  for(f in 1:opt_n$ny) {
+    val_set_n01[f, j] = val_set_n01[f, j] + 0.01*rnorm(1, 0, 1)
+  }
+}
+
+# Create predictions
+pred_n01_aux = predict.narmax(narmax_model, val_set_n01[, 1:nb_series], as.matrix(val_set_n01[, (nb_series+1)]), K=0)
+
+for(j in 1:nb_series) {
+  
+  pred = data.frame(pred = pred_n01_aux[[j]]$yh, time = seq(0.01, 3.03, 0.01))
+  
+  aux = np.cv(data = as.matrix(pred), h.seq = NULL, num.h = 1000, w = NULL, num.ln = 1,
+              ln.0 = 0, step.ln = 2, estimator = "LLP", kernel = "triweight")
+  
+  MSEs_aux_n01[j] = aux$h.opt[2, ]
+}
+
+
+################
+### 2% noise ###
+################
+# Add 2% of noise to initial condition
+val_set_n02 = val_set
+
+for(j in 1:nb_series) {
+  for(f in 1:opt_n$ny) {
+    val_set_n02[f, j] = val_set_n02[f, j] + 0.02*rnorm(1, 0, 1)
+  }
+}
+
+# Create predictions
+pred_n02_aux = predict.narmax(narmax_model, val_set_n02[, 1:nb_series], as.matrix(val_set_n02[, (nb_series+1)]), K=0)
+
+for(j in 1:nb_series) {
+  
+  pred = data.frame(pred = pred_n02_aux[[j]]$yh, time = seq(0.01, 3.03, 0.01))
+  
+  aux = np.cv(data = as.matrix(pred), h.seq = NULL, num.h = 1000, w = NULL, num.ln = 1,
+              ln.0 = 0, step.ln = 2, estimator = "LLP", kernel = "triweight")
+  
+  MSEs_aux_n02[j] = aux$h.opt[2, ]
+}
